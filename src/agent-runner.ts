@@ -134,6 +134,70 @@ export function parseExtSelectors(entries: string[]): {
   return { extNames, narrowing };
 }
 
+type ExtensionUI = ExtensionContext["ui"];
+type SubagentUIDialogOptions = { signal?: AbortSignal; timeout?: number };
+
+let uiDialogTail: Promise<void> = Promise.resolve();
+
+function enqueueUIDialog<T>(run: () => Promise<T>, fallback: T, signal?: AbortSignal): Promise<T> {
+  const result = uiDialogTail.then(
+    async () => {
+      if (signal?.aborted) return fallback;
+      return run();
+    },
+    async () => {
+      if (signal?.aborted) return fallback;
+      return run();
+    },
+  );
+
+  uiDialogTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+
+  return result;
+}
+
+function prefixDialogTitle(agentLabel: string, title: string): string {
+  return agentLabel ? `[${agentLabel}] ${title}` : title;
+}
+
+function createSubagentUIContext(parentUi: ExtensionUI, agentLabel: string): ExtensionUI {
+  return {
+    ...parentUi,
+    select: (title: string, options: string[], opts?: SubagentUIDialogOptions) =>
+      enqueueUIDialog(
+        () => parentUi.select(prefixDialogTitle(agentLabel, title), options, opts),
+        undefined,
+        opts?.signal,
+      ),
+    confirm: (title: string, message: string, opts?: SubagentUIDialogOptions) =>
+      enqueueUIDialog(
+        () => parentUi.confirm(prefixDialogTitle(agentLabel, title), message, opts),
+        false,
+        opts?.signal,
+      ),
+    input: (title: string, placeholder?: string, opts?: SubagentUIDialogOptions) =>
+      enqueueUIDialog(
+        () => parentUi.input(prefixDialogTitle(agentLabel, title), placeholder, opts),
+        undefined,
+        opts?.signal,
+      ),
+    custom<T>(factory: any, options?: any): Promise<T> {
+      return enqueueUIDialog(
+        () => parentUi.custom<T>(factory, options),
+        undefined as T,
+      );
+    },
+    editor: (title: string, prefill?: string) =>
+      enqueueUIDialog(
+        () => parentUi.editor(prefixDialogTitle(agentLabel, title), prefill),
+        undefined,
+      ),
+  };
+}
+
 /** Default max turns. undefined = unlimited (no turn limit). */
 let defaultMaxTurns: number | undefined;
 
@@ -555,22 +619,30 @@ export async function runAgent(
   const { session } = await createAgentSession(sessionOpts);
 
   const baseSessionName = agentConfig?.name ?? type;
-  session.setSessionName(
-    options.agentId ? `${baseSessionName}#${options.agentId.slice(0, 8)}` : baseSessionName,
-  );
+  const sessionName = options.agentId ? `${baseSessionName}#${options.agentId.slice(0, 8)}` : baseSessionName;
+  session.setSessionName(sessionName);
 
   // Bind extensions so that session_start fires and extensions can initialize
   // (e.g. loading credentials, setting up state). Tool gating already happened
   // at session construction via the `tools:` allowlist above — no separate
   // post-bind filter is needed. All ExtensionBindings fields are optional.
-  await session.bindExtensions({
-    onError: (err) => {
+  const inheritedUiContext = ctx.hasUI ? createSubagentUIContext(ctx.ui, sessionName) : undefined;
+  const extensionBindings: Parameters<AgentSession["bindExtensions"]>[0] & { mode?: string } = {
+    ...(inheritedUiContext ? { uiContext: inheritedUiContext } : {}),
+    onError: (err: { extensionPath: string }) => {
       options.onToolActivity?.({
         type: "end",
         toolName: `extension-error:${err.extensionPath}`,
       });
     },
-  });
+  };
+
+  if (inheritedUiContext) {
+    const parentMode = (ctx as ExtensionContext & { mode?: string }).mode;
+    if (parentMode) extensionBindings.mode = parentMode;
+  }
+
+  await session.bindExtensions(extensionBindings);
 
   options.onSessionCreated?.(session);
 

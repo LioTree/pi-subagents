@@ -134,6 +134,40 @@ function createSession(finalText: string) {
   return { session, listeners };
 }
 
+function createParentUi(overrides: Record<string, any> = {}) {
+  return {
+    select: vi.fn(async () => undefined),
+    confirm: vi.fn(async () => true),
+    input: vi.fn(async () => undefined),
+    notify: vi.fn(),
+    onTerminalInput: vi.fn(() => () => {}),
+    setStatus: vi.fn(),
+    setWorkingMessage: vi.fn(),
+    setWorkingVisible: vi.fn(),
+    setWorkingIndicator: vi.fn(),
+    setHiddenThinkingLabel: vi.fn(),
+    setWidget: vi.fn(),
+    setFooter: vi.fn(),
+    setHeader: vi.fn(),
+    setTitle: vi.fn(),
+    custom: vi.fn(async () => undefined),
+    pasteToEditor: vi.fn(),
+    setEditorText: vi.fn(),
+    getEditorText: vi.fn(() => ""),
+    editor: vi.fn(async () => undefined),
+    addAutocompleteProvider: vi.fn(),
+    setEditorComponent: vi.fn(),
+    getEditorComponent: vi.fn(() => undefined),
+    theme: {},
+    getAllThemes: vi.fn(() => []),
+    getTheme: vi.fn(() => undefined),
+    setTheme: vi.fn(() => ({ success: false, error: "not implemented" })),
+    getToolsExpanded: vi.fn(() => false),
+    setToolsExpanded: vi.fn(),
+    ...overrides,
+  };
+}
+
 const ctx = {
   cwd: "/tmp",
   model: undefined,
@@ -244,6 +278,70 @@ describe("agent-runner final output capture", () => {
     await runAgent(ctx, "Explore", "go", { pi, agentId: "a1b2c3d4e5f6" });
 
     expect(session.setSessionName).toHaveBeenCalledWith("Explore#a1b2c3d4");
+  });
+
+  it("passes a queued parent UI context to subagent extensions when UI is available", async () => {
+    const { session } = createSession("UI");
+    createAgentSession.mockResolvedValue({ session });
+    const parentUi = createParentUi();
+    const uiCtx = { ...ctx, hasUI: true, mode: "tui", ui: parentUi };
+
+    await runAgent(uiCtx, "Explore", "go", { pi, agentId: "a1b2c3d4e5f6" });
+
+    const bindings = session.bindExtensions.mock.calls[0][0];
+    expect(bindings.mode).toBe("tui");
+    expect(bindings.uiContext).toBeDefined();
+    expect(bindings.uiContext).not.toBe(parentUi);
+
+    await expect(bindings.uiContext.confirm("Unsandboxed Command", "run it")).resolves.toBe(true);
+    expect(parentUi.confirm).toHaveBeenCalledWith("[Explore#a1b2c3d4] Unsandboxed Command", "run it", undefined);
+  });
+
+  it("does not pass UI bindings when the parent context has no UI", async () => {
+    const { session } = createSession("NO_UI");
+    createAgentSession.mockResolvedValue({ session });
+    const noUiCtx = { ...ctx, hasUI: false, mode: "print", ui: createParentUi() };
+
+    await runAgent(noUiCtx, "Explore", "go", { pi });
+
+    const bindings = session.bindExtensions.mock.calls[0][0];
+    expect(bindings.uiContext).toBeUndefined();
+    expect(bindings.mode).toBeUndefined();
+  });
+
+  it("serializes inherited UI dialogs so background agents do not overlap prompts", async () => {
+    const { session } = createSession("QUEUE");
+    createAgentSession.mockResolvedValue({ session });
+    const events: string[] = [];
+    let resolveFirst: ((value: boolean) => void) | undefined;
+    const parentUi = createParentUi({
+      confirm: vi.fn(async (title: string) => {
+        events.push(`start:${title}`);
+        if (title.includes("first")) {
+          return await new Promise<boolean>((resolve) => {
+            resolveFirst = (value) => {
+              events.push("resolve:first");
+              resolve(value);
+            };
+          });
+        }
+        return false;
+      }),
+    });
+
+    await runAgent({ ...ctx, hasUI: true, mode: "tui", ui: parentUi }, "Explore", "go", { pi });
+
+    const ui = session.bindExtensions.mock.calls[0][0].uiContext;
+    const first = ui.confirm("first", "one");
+    const second = ui.confirm("second", "two");
+
+    await Promise.resolve();
+    expect(events).toEqual(["start:[Explore] first"]);
+
+    resolveFirst?.(true);
+    await expect(first).resolves.toBe(true);
+    await expect(second).resolves.toBe(false);
+    expect(events).toEqual(["start:[Explore] first", "resolve:first", "start:[Explore] second"]);
   });
 });
 
