@@ -22,8 +22,8 @@ vi.mock("@earendil-works/pi-tui", async (importOriginal) => {
 
 // Must import AFTER vi.mock declaration (vitest hoists vi.mock but the
 // dynamic import of the test subject must happen after)
-const { visibleWidth } = await import("@earendil-works/pi-tui");
-const { ConversationViewer } = await import("../src/ui/conversation-viewer.js");
+const { TUI, visibleWidth } = await import("@earendil-works/pi-tui");
+const { CONVERSATION_OVERLAY_WIDTH, ConversationViewer } = await import("../src/ui/conversation-viewer.js");
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -31,6 +31,16 @@ function mockTui(rows = 40, columns = 80) {
   return {
     terminal: { rows, columns },
     requestRender: vi.fn(),
+  } as any;
+}
+
+function mockTerminal(rows = 40, columns = 80) {
+  return {
+    rows,
+    columns,
+    hideCursor: vi.fn(),
+    showCursor: vi.fn(),
+    write: vi.fn(),
   } as any;
 }
 
@@ -62,6 +72,15 @@ function ansiTheme() {
   } as any;
 }
 
+function borderPaddingTheme() {
+  return {
+    ...ansiTheme(),
+    // Simulates the crash class: row content itself fits, but chrome/styling
+    // contributes visible padding after the right border.
+    fg: (color: string, text: string) => `\x1b[38;5;240m${text}${color === "border" ? "   " : ""}\x1b[0m`,
+  } as any;
+}
+
 function assertAllLinesFit(lines: string[], width: number) {
   for (let i = 0; i < lines.length; i++) {
     const vw = visibleWidth(lines[i]);
@@ -76,6 +95,22 @@ beforeEach(() => {
 });
 
 describe("ConversationViewer", () => {
+  describe("overlay sizing", () => {
+    it("resolves to full terminal width so chat gutters cannot leak into rendered lines", () => {
+      const termWidth = 133;
+      const tui = new TUI(mockTerminal(40, termWidth));
+      const layout = (tui as any).resolveOverlayLayout(
+        { anchor: "center", width: CONVERSATION_OVERLAY_WIDTH, maxHeight: "70%" },
+        20,
+        termWidth,
+        40,
+      );
+
+      expect(layout.col).toBe(0);
+      expect(layout.width).toBe(termWidth);
+    });
+  });
+
   describe("render width safety", () => {
     const widths = [40, 80, 120, 216];
 
@@ -157,6 +192,20 @@ describe("ConversationViewer", () => {
       }
     });
 
+    it("normalizes raw tabs before handing rendered lines to pi-tui overlay compositing", () => {
+      const w = 121;
+      const messages = [
+        { role: "toolResult", toolUseId: "t1", content: [{ type: "text", text: "src/config.ts:531:\treturn join(getAgentDir(), \"prompts\");" }] },
+      ];
+      const viewer = new ConversationViewer(
+        mockTui(30, w), mockSession(messages), mockRecord(), undefined, ansiTheme(), vi.fn(),
+      );
+      const lines = viewer.render(w);
+
+      expect(lines.some(line => line.includes("\t"))).toBe(false);
+      assertAllLinesFit(lines, w);
+    });
+
     it("no line exceeds width with bashExecution messages", () => {
       const messages = [
         {
@@ -233,6 +282,18 @@ describe("ConversationViewer", () => {
         );
         assertAllLinesFit(viewer.render(w), w);
       }
+    });
+
+    it("final-clamps rendered lines when chrome styling leaves trailing visible padding", () => {
+      const w = 80;
+      const messages = [
+        { role: "toolResult", toolUseId: "t1", content: [{ type: "text", text: "find.ts:113: \tconst customOps = options?.operations;" }] },
+      ];
+      const viewer = new ConversationViewer(
+        mockTui(30, w), mockSession(messages), mockRecord(), undefined, borderPaddingTheme(), vi.fn(),
+      );
+
+      assertAllLinesFit(viewer.render(w), w);
     });
   });
 

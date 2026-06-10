@@ -1575,7 +1575,7 @@ Terse command-style prompts produce shallow, generic work.
       return;
     }
 
-    const { ConversationViewer, VIEWPORT_HEIGHT_PCT } = await import("./ui/conversation-viewer.js");
+    const { CONVERSATION_OVERLAY_WIDTH, ConversationViewer, VIEWPORT_HEIGHT_PCT } = await import("./ui/conversation-viewer.js");
     const session = record.session;
     const activity = agentActivity.get(record.id);
 
@@ -1589,7 +1589,7 @@ Terse command-style prompts produce shallow, generic work.
       },
       {
         overlay: true,
-        overlayOptions: { anchor: "center", width: "90%", maxHeight: `${VIEWPORT_HEIGHT_PCT}%` },
+        overlayOptions: { anchor: "center", width: CONVERSATION_OVERLAY_WIDTH, maxHeight: `${VIEWPORT_HEIGHT_PCT}%` },
       },
     );
   }

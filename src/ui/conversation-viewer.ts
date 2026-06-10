@@ -17,8 +17,15 @@ import { createViewerKeys, type ViewerKeybindings, type ViewerKeys } from "./vie
 /** Base lines consumed by chrome: top border + header + header sep + footer sep + footer + bottom border. */
 const CHROME_LINES_BASE = 6;
 const MIN_VIEWPORT = 3;
+const TAB_REPLACEMENT = "   ";
+/** Full width prevents centered overlay gutters from mixing with underlying chat lines. */
+export const CONVERSATION_OVERLAY_WIDTH = "100%";
 /** Height ceiling shared by the overlay's `maxHeight` and the viewer's internal viewport cap. */
 export const VIEWPORT_HEIGHT_PCT = 70;
+
+function clampRenderLine(line: string, width: number): string {
+  return truncateToWidth(line.replace(/\t/g, TAB_REPLACEMENT), width);
+}
 
 export class ConversationViewer implements Component {
   private scrollOffset = 0;
@@ -177,7 +184,10 @@ export class ConversationViewer implements Component {
     lines.push(row(footerLeft + " ".repeat(footerGap) + footerRight));
     lines.push(hrBot);
 
-    return lines;
+    // Defensive final clamp: this component is usually rendered as an overlay,
+    // but the surrounding chat renderer may still contribute gutters/labels on
+    // adjacent columns. Never hand the TUI a line wider than the component width.
+    return lines.map(l => clampRenderLine(l, width));
   }
 
   /** Stoppable only when a stop handler exists and the agent is still active. */
@@ -292,6 +302,6 @@ export class ConversationViewer implements Component {
       lines.push(truncateToWidth(th.fg("accent", "▍ ") + th.fg("dim", act), width));
     }
 
-    return lines.map(l => truncateToWidth(l, width));
+    return lines.map(l => clampRenderLine(l, width));
   }
 }
